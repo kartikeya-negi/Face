@@ -20,11 +20,6 @@ FaceVisionAI enables fast and accurate face detection and recognition in images 
 
 ---
 
-## Demo
-
-![FaceVisionAI Demo](demo.png)
-
----
 
 ## Getting Started
 
@@ -36,7 +31,7 @@ FaceVisionAI enables fast and accurate face detection and recognition in images 
 ### Installation
 
 1. **Clone this repository:**
-git clone https://github.com/yourusername/FaceVisionAI.git
+git clone https://github.com/kartikeya-negi/FaceVisionAI/tree/main
 cd FaceVisionAI
 
 
