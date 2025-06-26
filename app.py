@@ -1,69 +1,92 @@
 import streamlit as st
-import face_recognition
+import mediapipe as mp
 import numpy as np
 from PIL import Image, ImageDraw
 import os
-import shutil
+import json
 
-st.title("Facial Recognition App")
+st.title("Face Detection & Labeling App (Streamlit Cloud Compatible)")
 
-KNOWN_FACES_DIR = "known_faces"
+LABELED_FACES_FILE = "labeled_faces.json"
 
-def load_known_faces():
-    encodings = []
-    names = []
-    for filename in os.listdir(KNOWN_FACES_DIR):
-        if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
-            image = face_recognition.load_image_file(os.path.join(KNOWN_FACES_DIR, filename))
-            faces = face_recognition.face_encodings(image)
-            if faces:
-                encodings.append(faces[0])
-                names.append(os.path.splitext(filename)[0])
-    return encodings, names
+# --- Helper functions ---
+def load_labeled_faces():
+    if os.path.exists(LABELED_FACES_FILE):
+        with open(LABELED_FACES_FILE, "r") as f:
+            return json.load(f)
+    return {}
 
-def save_new_face(image_file, name):
-    # Save uploaded image to known_faces directory with the given name
-    ext = os.path.splitext(image_file.name)[1]
-    save_path = os.path.join(KNOWN_FACES_DIR, f"{name}{ext}")
-    with open(save_path, "wb") as f:
-        f.write(image_file.getbuffer())
+def save_labeled_faces(data):
+    with open(LABELED_FACES_FILE, "w") as f:
+        json.dump(data, f)
 
-# Section: Add New Face
-st.header("Add a New Face")
-with st.form("add_face_form", clear_on_submit=True):
-    new_face_image = st.file_uploader("Upload a clear photo of the person", type=['jpg', 'jpeg', 'png'], key="add_face")
-    new_face_name = st.text_input("Enter the name of the person (no spaces or special characters)")
-    submitted = st.form_submit_button("Add Face")
-    if submitted:
-        if new_face_image and new_face_name:
-            save_new_face(new_face_image, new_face_name)
-            st.success(f"Added {new_face_name} to the known faces database.")
-        else:
-            st.warning("Please provide both a photo and a name.")
+# --- Section: Add a Label to a Face ---
+st.header("Add a Label to a Detected Face")
+labeled_faces = load_labeled_faces()
 
-# Load known faces (reload after adding)
-known_face_encodings, known_face_names = load_known_faces()
+add_face_image = st.file_uploader("Upload an image (clear face, for labeling)", type=['jpg', 'jpeg', 'png'], key="add_face")
+add_face_name = st.text_input("Enter a label/name for the face")
 
-# Section: Face Recognition
-st.header("Recognize Faces in an Image")
-uploaded_file = st.file_uploader("Upload an image for recognition", type=['jpg', 'jpeg', 'png'], key="recognition")
+if st.button("Add Face Label"):
+    if add_face_image and add_face_name:
+        image = Image.open(add_face_image).convert('RGB')
+        img_array = np.array(image)
+
+        mp_face_detection = mp.solutions.face_detection
+        with mp_face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.7) as face_detection:
+            results = face_detection.process(img_array)
+            if results.detections:
+                # Use the bounding box as a "face signature"
+                bbox = results.detections[0].location_data.relative_bounding_box
+                key = f"{bbox.xmin:.3f}_{bbox.ymin:.3f}_{bbox.width:.3f}_{bbox.height:.3f}"
+                labeled_faces[key] = add_face_name
+                save_labeled_faces(labeled_faces)
+                st.success(f"Labeled face as '{add_face_name}'.")
+            else:
+                st.warning("No face detected in the image.")
+    else:
+        st.warning("Please upload an image and enter a name.")
+
+# --- Section: Detect (and label) Faces in Uploaded Image ---
+st.header("Detect Faces in an Image")
+uploaded_file = st.file_uploader("Upload an image for detection", type=['jpg', 'jpeg', 'png'], key="detect_face")
 
 if uploaded_file is not None:
-    image = Image.open(uploaded_file)
+    image = Image.open(uploaded_file).convert('RGB')
     img_array = np.array(image)
-    face_locations = face_recognition.face_locations(img_array)
-    face_encodings = face_recognition.face_encodings(img_array, face_locations)
 
-    draw = ImageDraw.Draw(image)
-    for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
-        matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
-        name = "Unknown"
-        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-        if len(face_distances) > 0:
-            best_match_index = np.argmin(face_distances)
-            if matches[best_match_index]:
-                name = known_face_names[best_match_index]
-        draw.rectangle(((left, top), (right, bottom)), outline=(0, 255, 0), width=3)
-        draw.text((left, bottom + 10), name, fill=(255, 0, 0))
-    st.image(image, caption="Processed Image", use_column_width=True)
-    st.success(f"Found {len(face_locations)} face(s).")
+    mp_face_detection = mp.solutions.face_detection
+    with mp_face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.5) as face_detection:
+        results = face_detection.process(img_array)
+
+        draw = ImageDraw.Draw(image)
+        face_count = 0
+        if results.detections:
+            for detection in results.detections:
+                bbox = detection.location_data.relative_bounding_box
+                ih, iw, _ = img_array.shape
+                x = int(bbox.xmin * iw)
+                y = int(bbox.ymin * ih)
+                w = int(bbox.width * iw)
+                h = int(bbox.height * ih)
+                draw.rectangle([x, y, x + w, y + h], outline=(0, 255, 0), width=3)
+
+                # Try to match with labeled faces (simple bbox match)
+                key = f"{bbox.xmin:.3f}_{bbox.ymin:.3f}_{bbox.width:.3f}_{bbox.height:.3f}"
+                label = labeled_faces.get(key, "Unknown")
+                draw.text((x, y + h + 5), label, fill=(255, 0, 0))
+                face_count += 1
+
+            st.image(image, caption="Detected Faces", use_column_width=True)
+            st.success(f"Found {face_count} face(s).")
+        else:
+            st.image(image, caption="No faces detected", use_column_width=True)
+            st.warning("No faces found in the image.")
+
+# --- Show all labeled faces ---
+st.header("All Labeled Faces")
+if labeled_faces:
+    for k, v in labeled_faces.items():
+        st.write(f"Label: **{v}** (bbox signature: {k})")
+else:
+    st.write("No faces labeled yet.")
